@@ -5,6 +5,10 @@
  *  ルールベース+ビームサーチ
  * と思ったが、ルールベース取り除いた方が強い…？
  * 
+
+g++ ./sol/beam_search.cpp -I./../../Library_cpp -O2
+
+ *
  * limit=5sec
     57
     DDDLLUULURDLDRURRDLLURURDDLUULDLDRRDLUURRDLLLDRULURRDLDRR
@@ -29,6 +33,7 @@ const bool LOGS = true;
 #include <vector>
 #include <string>
 #include <stack>
+#include <set>
 #include <cassert>
 #include <chrono>
 #include <thread>
@@ -42,102 +47,13 @@ const bool LOGS = true;
 // #include "./action.cpp"
 // #include "./state_pool.cpp"
 // #include "./timer.cpp"
+#include "titan_cpplib/others/print.cpp"
+// #include "titan_cpplib/algorithm/random.cpp"
+#include "titan_cpplib/ahc/state_pool.cpp"
+#include "titan_cpplib/ahc/timer.cpp"
+#include "titan_cpplib/data_structures/hash_set.cpp"
 
 using namespace std;
-
-// Timer
-namespace titan23 {
-
-  /**
-   * @brief 時間計測クラス
-   */
-  class Timer {
-   private:
-    chrono::time_point<chrono::high_resolution_clock> start_timepoint;
-
-   public:
-    Timer() : start_timepoint(chrono::high_resolution_clock::now()) {}
-
-    /**
-     * @brief リセットする
-     */
-    void reset() {
-      start_timepoint = chrono::high_resolution_clock::now();
-    }
-
-    /**
-     * @brief 経過時間[ms]を返す
-     */
-    double elapsed() {
-      auto end_timepoint = chrono::high_resolution_clock::now();
-      auto start = chrono::time_point_cast<chrono::microseconds>(start_timepoint).time_since_epoch().count();
-      auto end = chrono::time_point_cast<chrono::microseconds>(end_timepoint).time_since_epoch().count();
-      return (end - start) * 0.001;
-    }
-  };
-}
-
-// StatePool
-namespace titan23 {
-
-  /**
-   * @brief ノードプールクラス
-   * @fn init(const unsigned int n): n要素確保する。
-   * @fn T* get(int i) const: iに対応するTのポインタを返す。
-   * @fn void del(int state_id): state_idに対応するTを仮想的に削除する。
-   * @fn int gen(): Tを仮想的に作成し、それに対応するidを返す。
-   * @fn int copy(int i): iに対応するTをコピーし、コピー先のidを返す。
-   */
-  template<typename T>
-  class StatePool {
-   public:
-    vector<T*> pool;
-    stack<int> unused_indx;
-
-   public:
-    StatePool() {}
-    StatePool(const unsigned int n) {
-      init(n);
-    }
-
-    void init(const unsigned int n) {
-      for (int i = 0; i < n; ++i) {
-        T* state = new T;
-        pool.emplace_back(state);
-        unused_indx.emplace(i);
-      }
-    }
-
-    T* get(int id) const {
-      assert(0 <= id && id < pool.size());
-      return pool[id];
-    }
-
-    void del(int id) {
-      assert(0 <= id && id < pool.size());
-      unused_indx.emplace(id);
-    }
-
-    int gen() {
-      int state_id;
-      if (unused_indx.empty()) {
-        T* state = new T;
-        state_id = pool.size();
-        pool.emplace_back(state);
-      } else {
-        state_id = unused_indx.top();
-        unused_indx.pop();
-      }
-      return state_id;
-    }
-
-    int copy(int id) {
-      int new_id = gen();
-      pool[id]->copy(pool[new_id]);
-      return new_id;
-    }
-  };
-}
 
 // Action
 namespace titan23 {
@@ -263,9 +179,12 @@ namespace titan23 {
 namespace puzzle15 {
   struct State;
   using StatePtr = State*;
+  using ScoreType = int;
   using HashType = unsigned long long;
-
+  struct SubState;
   HashType hash_rand[100][101];
+  StatePool<State> pool;
+  StatePool<SubState> sub_pool;
 
   // trans[i*N+j][action]:= (i,j),last=actionのときの遷移
   vector<vector<vector<titan23::Action>>> trans;
@@ -316,6 +235,7 @@ namespace puzzle15 {
     vector<int8_t> field;
     HashType hash;
     Action first_action, last_action;
+    int substate_id;
     State() {}
 
     bool is_done() const { return get_score() == 0; }
@@ -326,6 +246,7 @@ namespace puzzle15 {
       tie(man_dist, hash) = try_op(action);
 
       // ni, nj
+      assert(field[zi*N+zj] == 0);
       int ni = zi, nj = zj;
       switch (action) {
         case Action::D: ++ni; break;
@@ -375,14 +296,11 @@ namespace puzzle15 {
       }
     }
 
-    vector<Action>& get_actions(const int beam_turn, const vector<Action> &history) const {
-      if (beam_turn == 0) {
-        if (history.empty()) {
-          return trans[zi*N+zj][4];
-        } else {
-          return trans[zi*N+zj][static_cast<int>(history.back())];
-        }
+    vector<Action>& get_actions(const bool is_first_turn) const {
+      if (is_first_turn) {
+        return trans[zi*N+zj][4];
       }
+      assert(0 <= zi && 0 <= zj);
       return trans[zi*N+zj][static_cast<int>(last_action)];
     }
 
@@ -440,12 +358,12 @@ namespace puzzle15 {
     }
   };
 
-  struct Param {
+  class Param {
    private:
-    titan23::Timer timer;
+    Timer timer;
     double time_limit;
     int beam_depth_base, beam_width_base;
-    int max_turn;
+    int decide_turn, max_turn;
     vector<int> pred, pred_acc;
     int done_depth_total;
     bool adjace;
@@ -455,21 +373,22 @@ namespace puzzle15 {
 
     /**
      *
-     @brief ビムサパラメータクラス
+     @brief Construct a new Param object
      *
-     * @param time_limit 制限時間[ms] `adjace=true` のときに利用
-     * @param max_turn 最大探索ターン数
-     * @param beam_depth_base 各ターンの探索ターン数
-     * @param beam_width_base ビーム幅
-     * @param adjace ビーム幅を可変として、制限時間に間に合わせるときに利用
+     * @param time_limit
+     * @param max_turn
+     * @param beam_depth_base
+     * @param beam_width_base
      */
     Param(const double time_limit,
           const int max_turn,
+          const int decide_turn,
           const int beam_depth_base,
           const int beam_width_base,
           const bool adjace=false) :
         time_limit(time_limit),
         beam_depth_base(beam_depth_base), beam_width_base(beam_width_base),
+        decide_turn(decide_turn),
         max_turn(max_turn),
         pred(max_turn+1, 0), pred_acc(max_turn+2, 0),
         done_depth_total(0),
@@ -483,15 +402,19 @@ namespace puzzle15 {
 
     void init() { timer.reset(); }
     int get_max_turn() const { return max_turn; }
-    int get_beam_depth() { return beam_depth_base; }
-    int get_beam_width() { return beam_width_base; }
+    int get_beam_depth() const { return beam_depth_base; }
+    int get_beam_width() const { return beam_width_base; }
 
-    int get_beam_depth(const int turn) {
+    int get_beam_depth(const int turn) const {
       return min(beam_depth_base, max_turn-turn);
     }
 
     void timestamp(const int turn, const int done_depth) {
       done_depth_total += done_depth;
+    }
+
+    int get_decide_turn() const {
+      return decide_turn;
     }
 
     int get_beam_width(const int turn) {
@@ -505,92 +428,242 @@ namespace puzzle15 {
     }
   };
 
-  struct ScoreState {
-    int score, par;
+  struct SubState {
+    ScoreType score;
+    long long state, par;
     Action action;
-    ScoreState() {}
+    SubState() {}
   };
 
-  /**
-   * @fn
-   * @brief ビームサーチを実行する
-   * @param (verbose: bool) ログの出力
-   * @return 探索した中での最適な状態
-   * @details コピーが少ない
-   */
-  static inline Result run(Param &param, const bool verbose=false) {
-    Result result;
+  class BeamSearch {
+   private:
+    static inline void calc_next_beam(const vector<long long> &keep,
+                                      const int turn,
+                                      __gnu_pbds::gp_hash_table<HashType, uint8_t> &seen,
+                                      vector<long long> &score_keep) {
+      for (const long long now_state: keep) {
+        const vector<Action> &actions = pool.get(now_state)->get_actions(turn);
+        for (const Action &op : actions) {
+          auto [new_score, new_hash] = pool.get(now_state)->try_op(op);
+          if (seen.find(new_hash) != seen.end()) continue;
+          seen[new_hash] = 0;
+          const long long substate = sub_pool.gen();
+          sub_pool.get(substate)->score = new_score;
+          sub_pool.get(substate)->state = now_state;
+          sub_pool.get(substate)->action = op;
+          score_keep.emplace_back(substate);
+        }
+      }
+    }
+   public:
+    static inline Result run_each_turn(Param &param, const bool verbose=false) {
+      Result result;
 
-    StatePool<State> pool(param.get_beam_width()*2+1);
-    StatePool<ScoreState> score_pool(param.get_beam_width());
-    const int best_state = pool.gen();
-    pool.get(best_state)->init();
-    param.init();
+      const long long best_state = pool.gen();
+      pool.get(best_state)->init();
+      param.init();
 
-    for (int turn = 0; turn < param.get_max_turn(); ++turn) {
-      if (verbose) cerr << "# turn : " << turn << endl;
-      const int beam_depth = param.get_beam_depth(turn);
-      const int beam_width = param.get_beam_width(turn);
-      int done_depth = 0;
-      vector<int> keep = {pool.copy(best_state)};
-      for (int beam_turn = 0; beam_turn < beam_depth; ++beam_turn, ++done_depth) {
+      for (int turn = 0; turn < param.get_max_turn(); ++turn) {
+        if (verbose) cout << "# turn : " << turn << endl;
+        const int beam_depth = param.get_beam_depth(turn);
+        const int beam_width = param.get_beam_width(turn);
+        int done_depth = 0;
+        vector<long long> keep = { pool.copy(best_state) };
         __gnu_pbds::gp_hash_table<HashType, uint8_t> seen;
-        vector<int> score_keep;
-        score_keep.reserve(keep.size());
-        for (const int now_state: keep) {
-          const vector<Action> &actions = pool.get(now_state)->get_actions(beam_turn, result.history);
-          for (const Action &op : actions) {
-            auto [new_score, new_hash] = pool.get(now_state)->try_op(op);
-            if (seen.find(new_hash) != seen.end()) continue;
-            seen[new_hash] = 0;
-            int score_state = score_pool.gen();
-            score_pool.get(score_state)->score = new_score;
-            score_pool.get(score_state)->par = now_state;
-            score_pool.get(score_state)->action = op;
-            score_keep.emplace_back(score_state);
+        for (int beam_turn = 0; beam_turn < beam_depth; ++beam_turn, ++done_depth) {
+          vector<long long> score_keep;
+          score_keep.reserve(keep.size());
+          calc_next_beam(keep, turn, seen, score_keep);
+          nth_element(score_keep.begin(), score_keep.begin() + min((long long)score_keep.size(), (long long)param.get_beam_width()), score_keep.end(), [&] (const long long &l, const long long &r) {
+            return sub_pool.get(l)->score < sub_pool.get(r)->score;
+          });
+          const Action &op = sub_pool.get(score_keep.front())->action;
+          bool is_all_same = true;
+          vector<long long> new_keep(min((long long)beam_width, (long long)score_keep.size()));
+          for (int i = 0; i < beam_width && i < score_keep.size(); ++i) {
+            const long long state = pool.copy(sub_pool.get(score_keep[i])->state);
+            if (beam_turn == 0) {
+              pool.get(state)->first_action = sub_pool.get(score_keep[i])->action;
+            }
+            pool.get(state)->apply_op(sub_pool.get(score_keep[i])->action);
+            if (is_all_same && pool.get(state)->first_action != op) is_all_same = false;
+            new_keep[i] = state;
           }
+          for (const long long state: score_keep) sub_pool.del(state);
+          for (const long long state: keep) pool.del(state);
+          swap(keep, new_keep);
+          const long long d_best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
+            return (*pool.get(l)) < (*pool.get(r));
+          });
+          if (pool.get(d_best_state)->is_done() || is_all_same) break;
         }
-        nth_element(score_keep.begin(), score_keep.begin() + min((int)score_keep.size(), param.get_beam_width()), score_keep.end(), [&] (const int &l, const int &r) {
-          return score_pool.get(l)->score < score_pool.get(r)->score;
-        });
-        Action op = score_pool.get(score_keep.front())->action;
-        bool is_all_same = true;
-        vector<int> new_keep(min(beam_width, (int)score_keep.size()));
-        for (int i = 0; i < beam_width && i < score_keep.size(); ++i) {
-          int state = pool.copy(score_pool.get(score_keep[i])->par);
-          if (beam_turn == 0) {
-            pool.get(state)->first_action = score_pool.get(score_keep[i])->action;
-          }
-          pool.get(state)->apply_op(score_pool.get(score_keep[i])->action);
-          if (is_all_same && pool.get(state)->first_action != op) is_all_same = false;
-          new_keep[i] = state;
-        }
-        for (const int state: score_keep) score_pool.del(state);
-        for (const int state: keep) pool.del(state);
-        swap(keep, new_keep);
-        int d_best_state = *min_element(keep.begin(), keep.end(), [&] (const int &l, const int &r) {
+        param.timestamp(turn, done_depth);
+        const long long d_best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
           return (*pool.get(l)) < (*pool.get(r));
         });
-        if (pool.get(d_best_state)->is_done() || is_all_same) break;
+        const Action &op = pool.get(d_best_state)->first_action;
+        pool.get(best_state)->apply_op(op);
+        result.history.push_back(op);
+        if (verbose) {
+          pool.get(best_state)->print();
+          cout << "Score = " << pool.get(best_state)->get_score() << endl << endl;
+        }
+        for (const long long node_id: keep) pool.del(node_id);
+        if (pool.get(best_state)->is_done()) break;
       }
-      param.timestamp(turn, done_depth);
-      int d_best_state = *min_element(keep.begin(), keep.end(), [&] (const int &l, const int &r) {
+      result.score = pool.get(best_state)->get_score();
+      pool.del(best_state);
+      return result;
+    }
+
+    static inline Result run_normal(Param &param, const bool verbose=false) {
+      param.init();
+      Result result;
+
+      __gnu_pbds::gp_hash_table<HashType, uint8_t> seen;
+      vector<long long> keep;
+
+      { // init state
+        const long long state = pool.gen();
+        pool.get(state)->init();
+        seen[state] = 0;
+        keep = { state };
+        pool.get(state)->substate_id = -1;
+      }
+
+      for (int turn = 0; turn < param.get_max_turn(); ++turn) {
+        if (verbose) cout << "# turn : " << turn << endl;
+        const int beam_width = param.get_beam_width(turn);
+        vector<long long> score_keep;
+        calc_next_beam(keep, turn, seen, score_keep);
+        nth_element(score_keep.begin(), score_keep.begin() + min((long long)score_keep.size(), (long long)param.get_beam_width()), score_keep.end(), [&] (const long long &l, const long long &r) {
+          return sub_pool.get(l)->score < sub_pool.get(r)->score;
+        });
+        vector<long long> new_keep(min((long long)beam_width, (long long)score_keep.size()));
+        for (int i = 0; i < beam_width && i < score_keep.size(); ++i) {
+          long long substate = score_keep[i];
+          long long new_state = pool.copy(sub_pool.get(substate)->state);
+          pool.get(new_state)->apply_op(sub_pool.get(substate)->action);
+          pool.get(new_state)->substate_id = substate;
+          sub_pool.get(substate)->par = pool.get(sub_pool.get(substate)->state)->substate_id;
+          new_keep[i] = new_state;
+        }
+
+        for (const long long state: keep) pool.del(state);
+        for (int i = new_keep.size(); i < score_keep.size(); ++i) {
+          sub_pool.del(score_keep[i]);
+        }
+
+        swap(keep, new_keep);
+        const long long best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
+          return (*pool.get(l)) < (*pool.get(r));
+        });
+        if (verbose) {
+          // pool.get(best_state)->print();
+          cout << "Score = " << pool.get(best_state)->get_score() << endl << endl;
+        }
+        if (pool.get(best_state)->is_done()) break;
+      }
+
+      const long long best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
         return (*pool.get(l)) < (*pool.get(r));
       });
-      Action op = pool.get(d_best_state)->first_action;
-      pool.get(best_state)->apply_op(op);
-      result.history.push_back(op);
-      if (verbose) {
-        pool.get(best_state)->print();
-        cerr << "Score = " << pool.get(best_state)->get_score() << endl << endl;
+      result.score = pool.get(best_state)->get_score();
+      long long substate = pool.get(best_state)->substate_id;
+      while (substate != -1) {
+        result.history.emplace_back(sub_pool.get(substate)->action);
+        substate = sub_pool.get(substate)->par;
       }
-      for (const int node_id: keep) pool.del(node_id);
-      if (pool.get(best_state)->is_done()) break;
+      reverse(result.history.begin(), result.history.end());
+      return result;
     }
-    result.score = pool.get(best_state)->get_score();
-    pool.del(best_state);
-    return result;
-  }
+
+    static inline Result run(Param &param, const bool verbose=false) {
+      /*
+      - 一度のビームサーチで、何ターン先を決めるか
+        - 幅、深さ
+        - 何ターン先まで読むか
+      */
+
+      Result result;
+      param.init();
+
+      const long long best_state = pool.gen();
+      pool.get(best_state)->init();
+      pool.get(best_state)->substate_id = -1;
+
+      for (int turn = 0; turn < param.get_max_turn(); turn += param.get_decide_turn()) {
+        if (verbose) cout << "# turn : " << turn << endl;
+
+        vector<long long> keep;
+        const int beam_depth = param.get_beam_depth(turn);
+        const int beam_width = param.get_beam_width(turn);
+        __gnu_pbds::gp_hash_table<HashType, uint8_t> seen;
+
+        { // init
+          const long long init_state = pool.copy(best_state);
+          seen[init_state] = 0;
+          pool.get(init_state)->substate_id = -1;
+          keep = {init_state};
+        }
+
+        for (int beam_turn = 0; beam_turn < beam_depth; ++beam_turn) {
+          vector<long long> score_keep;
+          calc_next_beam(keep, turn, seen, score_keep);
+          const int w = min((int)score_keep.size(), beam_width);
+          nth_element(score_keep.begin(), score_keep.begin() + w, score_keep.end(), [&] (const long long &l, const long long &r) {
+            return sub_pool.get(l)->score < sub_pool.get(r)->score;
+          });
+          vector<long long> new_keep;
+
+          for (int i = 0; i < w; ++i) {
+            long long substate = score_keep[i];
+            long long nowstate = sub_pool.get(substate)->state;
+            long long new_state = pool.copy(nowstate);
+            pool.get(new_state)->apply_op(sub_pool.get(substate)->action);
+            pool.get(new_state)->substate_id = substate;
+            sub_pool.get(substate)->par = pool.get(nowstate)->substate_id;
+            new_keep.emplace_back(new_state);
+          }
+
+          for (const long long state: keep) pool.del(state);
+          for (int i = w; i < score_keep.size(); ++i) {
+            sub_pool.del(score_keep[i]);
+          }
+
+          swap(keep, new_keep);
+          const long long this_best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
+            return (*pool.get(l)) < (*pool.get(r));
+          });
+          if (pool.get(this_best_state)->is_done()) break;
+        }
+
+        const long long this_best_state = *min_element(keep.begin(), keep.end(), [&] (const long long &l, const long long &r) {
+          return (*pool.get(l)) < (*pool.get(r));
+        });
+        long long substate = pool.get(this_best_state)->substate_id;
+        vector<Action> history;
+        while (substate != -1) {
+          history.emplace_back(sub_pool.get(substate)->action);
+          substate = sub_pool.get(substate)->par;
+        }
+        sub_pool.clear();
+        reverse(history.begin(), history.end());
+        for (int i = 0; i < min(param.get_decide_turn(), (int)(history.size())); ++i) {
+          result.history.emplace_back(history[i]);
+          pool.get(best_state)->apply_op(history[i]);
+          if (verbose) {
+            pool.get(best_state)->print();
+            cout << "Score = " << pool.get(best_state)->get_score() << endl << endl;
+          }
+        }
+        if (pool.get(best_state)->is_done()) break;
+      }
+      result.score = pool.get(best_state)->get_score();
+      return result;
+    }
+  };
+
 
   void advance(vector<vector<int>> &a, Result &result) {
     rep(i, N) rep(j, N) {
@@ -633,12 +706,12 @@ void solve() {
   vector<int> UB = {N};
   if (N <= 4) {
     TURN = 80;
-    DEP = 80;
-    W = 10000;
+    DEP = TURN;
+    W = 10'000;
   } else if (N <= 5) {
     TURN = 150;
-    DEP = 150;
-    W = 6000;
+    DEP = TURN;
+    W = 10'000;
   } else if (N <= 10) {
     // 2sec 1108
     // TURN = 1000;
@@ -648,8 +721,8 @@ void solve() {
 
     // 40sec 1006
     TURN = 2000;
-    DEP = 300;
-    W = 2850; // 謎の幅
+    DEP = 2000;
+    W = 500;
     UB = {N};
   } else {
     cerr << N << endl;
@@ -659,8 +732,9 @@ void solve() {
   for (int ub: UB) {
     GLOBAL_DO_UB = ub;
     titan23::puzzle15::init();
-    titan23::puzzle15::Param param(TL, TURN, DEP, W, false);
-    titan23::puzzle15::Result res = titan23::puzzle15::run(param, LOGS);
+    titan23::puzzle15::Param param(TL, TURN, 50, DEP, W, false);
+    titan23::puzzle15::Result res = titan23::puzzle15::BeamSearch::run(param, LOGS);
+    // titan23::puzzle15::Result res = titan23::puzzle15::run_each_turn(param, LOGS);
     ans.emplace_back(res);
     titan23::puzzle15::advance(A, res);
   }
