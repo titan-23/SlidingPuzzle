@@ -1,30 +1,7 @@
 /**
- * @file beam_search.cpp
- * @author titan23
- * @brief
- *  ルールベース+ビームサーチ
- * と思ったが、ルールベース取り除いた方が強い…？
- *
- * limit=5sec
-    57
-    DDDLLUULURDLDRURRDLLURURDDLUULDLDRRDLUURRDLLLDRULURRDLDRR
-    104
-    URDRRDLDLDLULURURRRULDDLDDRURUUULLDDDRDRUULULDDLLUURURDDRDLLDRRRULLLDLURDRUULLUURDLDDDRURRUURULLDDLDRRDR
-    1108
-    LULDDRULDDLDRURULLDDDDDRULURDRULURDRULURDRULURRDLUULDLURUUURDDLUULDDRULLDDLDDLUURURRDLURRRRDDDDDDLDLULLURULLDRRRRDLLLURURRDLUURDLULULULDRDLULLURURRRDRDRDRRUUULDDRURULLDLDLLLLLDLDDRRRULULLDDRRDRDLULLURURUULUUURDLLDRRURRULURDLLURDLLLDDRURRRRDRUULDDRUURDRURDLLLUULDDLULLLULDDRUURRRRDRURDRRULDDRUULDLLULLDDDDLLLLDDDDDRRULLDRULUURDLUURDLDRRRULURDRRRURDDRDRDLLURRULULDDLDLULUURRRDRDLULDLUURDDRURUUURUULULDDRULLULLDRRDRDRULDDLLLLDRRRRULULDDRUUULLURDDLUULULDLDDRDRURUULLDDDDLDDDRULURDRULURUURDDLURRDRDRUULDDDLURDDLUULURUURURDRULULLDRUULDLLDRRRDRUULLLLLDDRURDRRDLDRURUURRUULDLLLLLLDRDDLDRULURDDDDLUULDRUULDRUULDRURRRDDDLLLUUUULDRRRDLDRDDRDLLURRRDLLLLURRRDLLURUUURRRURURULLLDLULDDRUULDDRULLLDRDRUULUULDLDDRURUURDRDRRRULULDDDRUUURDDLULDLLLLLUURRDLLDRURDDLUURDDLDDRDLUURUULDRDDLDLDRDLURRULDDRULLDRUURUUURRRDRDDLLDRRRUURDLLLUURDRRULDDLDDLUUURURULLDLLDLUURDRDRURDDDRRDLURUULDDLLULLULUURRDRDRDLLLUURDRURDLURRDRUULDDDLUUUULLLDDRDDDLDLURDRULDLURULUUUURRDRURRDDRUULLDDRDRUULLLDDLLDRRURUURULLLLDRURDDLULLDDRRURURURDDLULLLDRURDDDLDRULUURDRDRRUULLLDDRRURDDLURDLLDLULURRRULLLDRRDLURRURULLDLDRURDLDDRUULURRDDLUULDDDLLURRDRRULLDRURD
-
- * limit=inf
-    1006 40sec
-    LULDRDLLLULURRDRRDLLLULDDRUURRDLDDLUUUURRURRULLDRRDDRULLDRDDLULDDLDDDLUUUUUURDDDDDRULLUUURDRDDRRURRDRURULURUULLDLDRURDLDDDRDLURRDLURULUULDLLLLDDRURRRDRUULLLLLDRRRRDLDLDLLUULLUURDRRRRULLUULUURRURRRDDLULLURRRDLLDDDLDLULUUULLDRRURRULLLLDDDDLUUUURDDDLUURDRDLDLUURDDLDRURURRRDRURRDRUUULLLDLLLLURRRRULDDDRRDRRUULDRDDLLDLULDDDRDLLLLLLURDRULUURRRRDLLLURRULLLDRUUULLDRDDDRDRRRULLULDRULUUULDRUUUURRRDDLULDRULLDRRDDDLULUURRDRRDRDLDDDRRDRULDLURUURULDLURUULULURURRDLDLUURDLULDLLDDRDDLLDRUULDRUULDRRRRDLDDLLLDDLLLURRRRRRRRULLLDDLUURDRULDLUUUURURDRRRULLUUULDLLLDDDRRRRUULLDLDRRDDRUUUULDLLDRRDLDDRURDDLURRRDDLULURULUUULDDRULLDDDRRDLDLLLLLLURURUUUUULDLDRRRRRULULUULLDDDRRULLDLUUURDLDRDRRRDDRRRRRDDLURDDLLDLLUULLDRDLLLURRULULUULDDDRDRRRURRDRUULURURDRULUULULLLULLDRRDDRURDDRRDDRUULULUUULDLULLLDLURRDRDLULURRRRRRRDDDLUUURDLULLDDRRRULULLDRURDLDRDDDLLLULDLLDRULURRDLDLLURULLDDRRRDRUULULULDLURRDDLLURDDLUURRDRRUURDDRRDRDLLUURDDRURULLLULURDLULURDDRULDRUULURRDDLUULDLDRRRUULDDDDDRDLLLDDRRULURRDRDLLLLURRURRUURDDDLDRULLDRRUULLLDRRDR
-
-
-
-
-g++ tree.cpp -I./../../Library_cpp
+g++ euler.cpp -I./../../Library_cpp
 time ./a.out < ./../in/testcase1.txt > out.txt
  */
-
-// ログの出力
 
 #pragma GCC target("avx2")
 #pragma GCC optimize("O3")
@@ -75,8 +52,8 @@ void input() {
 namespace beam_search_with_tree {
 
 using ScoreType = long long;
-ScoreType INF = 1e9;
 using HashType = unsigned long long;
+const ScoreType INF = 1e9;
 
 // Action
 struct Action {
@@ -118,8 +95,9 @@ void init_zhs() {
 
 class State {
   private:
+
     // (i, j) に val があるときのスコア
-    int get_pos_d(const int i, const int j, const int val) const {
+    int get_pos_score(const int i, const int j, const int val) const {
         if (val == 0) return 0;
         int s = abs(i-((val-1)/N)) + abs(j-((val-1)%N));
         return s;
@@ -151,7 +129,7 @@ class State {
         }
         this->score = 0;
         rep(i, N) rep(j, N) {
-            this->score += get_pos_d(i, j, field[i*N+j]);
+            this->score += get_pos_score(i, j, field[i*N+j]);
         }
     }
 
@@ -176,10 +154,10 @@ class State {
         }
 
         // score
-        new_score -= get_pos_d(zi, zj, field[zi*N+zj]);
-        new_score += get_pos_d(zi, zj, field[ni*N+nj]);
-        new_score -= get_pos_d(ni, nj, field[ni*N+nj]);
-        new_score += get_pos_d(ni, nj, field[zi*N+zj]);
+        new_score -= get_pos_score(zi, zj, field[zi*N+zj]);
+        new_score += get_pos_score(zi, zj, field[ni*N+nj]);
+        new_score -= get_pos_score(ni, nj, field[ni*N+nj]);
+        new_score += get_pos_score(ni, nj, field[zi*N+zj]);
 
         // hash
         new_hash ^= hash_rand[zi*N+zj][field[zi*N+zj]];
@@ -317,7 +295,7 @@ class BeamSearchWithTree {
         vector<tuple<int, Action, ActionIDType>> new_tree;
         new_tree.reserve(tree.size());
         if (turn == 0) {
-            for (auto [par, _, new_action, action_id] : next_beam) {
+            for (auto &[par, _, new_action, action_id] : next_beam) {
                 assert(par == -1);
                 new_tree.emplace_back(0, new_action, action_id);
             }
@@ -341,15 +319,13 @@ class BeamSearchWithTree {
             }
         }
 
-        int beam_idx = 0;
         for (; i < tree.size(); ++i) {
             const auto &[dir_or_leaf_id, action, action_id] = tree[i];
             if (dir_or_leaf_id >= 0) {
-                if (beam_idx >= (int)next_beam.size()) continue;
                 if (next_beam_data[dir_or_leaf_id].empty()) continue;
                 new_tree.emplace_back(-1, action, action_id);
-                for (const int idx : next_beam_data[dir_or_leaf_id]) {
-                    auto &[par, _, new_action, new_action_id] = next_beam[idx];
+                for (const int beam_idx : next_beam_data[dir_or_leaf_id]) {
+                    auto &[_, __, new_action, new_action_id] = next_beam[beam_idx];
                     new_tree.emplace_back(dir_or_leaf_id, new_action, new_action_id);
                 }
                 new_tree.emplace_back(-2, action, action_id);
@@ -415,10 +391,11 @@ class BeamSearchWithTree {
                 assert(!next_beam.empty());
             }
 
-            // ビームを絞る // TODO 評価値が一致した場合、親の評価値も参考にするなど
+            // ビームを絞る
             int beam_width = min(param.BEAM_WIDTH, (int)next_beam.size());
             assert(beam_width <= param.BEAM_WIDTH);
-            // cerr << "beam_width=" << beam_width << endl;
+
+            // TODO 評価値が一致した場合、親の評価値も参考にするなど
             nth_element(next_beam.begin(), next_beam.begin() + beam_width, next_beam.end(), [&] (const tuple<int, ScoreType, Action, ActionIDType> &left, const tuple<int, ScoreType, Action, ActionIDType> &right) {
                 return std::get<1>(left) < std::get<1>(right);
             });
@@ -460,7 +437,7 @@ class BeamSearchWithTree {
 void solve() {
     beam_search_with_tree::BeamParam param;
     param.MAX_TURN = 1000;
-    param.BEAM_WIDTH = 20000;
+    param.BEAM_WIDTH = 10000;
     beam_search_with_tree::init_zhs();
     beam_search_with_tree::BeamSearchWithTree bs;
     vector<beam_search_with_tree::Action> ans = bs.search(param, true);
