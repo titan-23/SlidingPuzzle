@@ -232,6 +232,11 @@ struct BeamParam {
 };
 
 class BeamSearchWithTree {
+    // ref: https://eijirou-kyopro.hatenablog.com/entry/2024/02/01/115639
+
+    const int PRE_ORDER = -1;
+    const int POST_ORDER = -2;
+
   private:
     titan23::HashSet seen;
     using ActionIDType = int;
@@ -259,7 +264,7 @@ class BeamSearchWithTree {
             for (Action &action : actions) {
                 auto [score, hash] = state->try_op(action);
                 if (seen.contains_insert(hash)) continue;
-                next_beam.emplace_back(-1, score, action, ActionID);
+                next_beam.emplace_back(PRE_ORDER, score, action, ActionID);
                 ActionID++;
             }
             return 0;
@@ -281,7 +286,7 @@ class BeamSearchWithTree {
                 }
                 ++leaf_id;
                 state->rollback(action);
-            } else if (dir_or_leaf_id == -1) {
+            } else if (dir_or_leaf_id == PRE_ORDER) {
                 state->apply_op(action);
             } else {
                 state->rollback(action);
@@ -308,7 +313,7 @@ class BeamSearchWithTree {
         while (true) {
             const auto &[dir_or_leaf_id, action, action_id] = tree[i];
             // 行きがけかつ帰りがけのaction_idが一致しているなら、一本道なので行くだけ
-            if (dir_or_leaf_id == -1 && action_id == std::get<2>(tree.back())) {
+            if (dir_or_leaf_id == PRE_ORDER && action_id == std::get<2>(tree.back())) {
                 ++i;
                 result.emplace_back(action);
                 state->apply_op(action);
@@ -323,21 +328,21 @@ class BeamSearchWithTree {
             const auto &[dir_or_leaf_id, action, action_id] = tree[i];
             if (dir_or_leaf_id >= 0) {
                 if (next_beam_data[dir_or_leaf_id].empty()) continue;
-                new_tree.emplace_back(-1, action, action_id);
+                new_tree.emplace_back(PRE_ORDER, action, action_id);
                 for (const int beam_idx : next_beam_data[dir_or_leaf_id]) {
                     auto &[_, __, new_action, new_action_id] = next_beam[beam_idx];
                     new_tree.emplace_back(dir_or_leaf_id, new_action, new_action_id);
                 }
-                new_tree.emplace_back(-2, action, action_id);
+                new_tree.emplace_back(POST_ORDER, action, action_id);
                 next_beam_data[dir_or_leaf_id].clear();
-            } else if (dir_or_leaf_id == -1) {
-                new_tree.emplace_back(-1, action, action_id);
+            } else if (dir_or_leaf_id == PRE_ORDER) {
+                new_tree.emplace_back(PRE_ORDER, action, action_id);
             } else {
                 int pre_dir = std::get<0>(new_tree.back());
-                if (pre_dir == -1) {
+                if (pre_dir == PRE_ORDER) {
                     new_tree.pop_back(); // 一つ前が行きがけなら、削除して追加しない
                 } else {
-                    new_tree.emplace_back(-2, action, action_id);
+                    new_tree.emplace_back(POST_ORDER, action, action_id);
                 }
             }
         }
@@ -361,7 +366,7 @@ class BeamSearchWithTree {
                     result.emplace_back(action);
                     return;
                 }
-            } else if (dir_or_leaf_id == -1) {
+            } else if (dir_or_leaf_id == PRE_ORDER) {
                 result.emplace_back(action);
             } else {
                 result.pop_back();
