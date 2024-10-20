@@ -256,13 +256,24 @@ struct BeamParam {
 class BeamSearchWithTree {
   private:
     titan23::HashSet seen;
+    using ActionIDType = int;
+    ActionIDType ActionID;
+    vector<Action> result;
 
-    vector<tuple<int, int, Action>> tree; // dir, id, action
-    vector<tuple<int, ScoreType, Action>> next_beam; // <par, score, action
+    // ビームサーチの過程を表す木
+    // <dir or id, action, action_id>
+    // dir or id := 葉のとき、leaf_id
+    //              そうでないとき、行きがけなら-1、帰りがけなら-2
+    vector<tuple<int, Action, ActionIDType>> tree;
+
+    // 次のビーム候補を保持する配列
+    vector<tuple<int, ScoreType, Action, ActionIDType>> next_beam; // <par, score, action, action_id>
+
+    vector<vector<int>> next_beam_data;
 
     int get_next_beam(State* state, int turn) {
         next_beam.clear();
-        next_beam.reserve(tree.size() * 4);
+        next_beam.reserve(tree.size() * 4); // TODO
         seen.clear();
 
         if (turn == 0) {
@@ -270,7 +281,8 @@ class BeamSearchWithTree {
             for (Action &action : actions) {
                 auto [score, hash] = state->try_op(action);
                 if (seen.contains_insert(hash)) continue;
-                next_beam.emplace_back(-1, score, action);
+                next_beam.emplace_back(-1, score, action, ActionID);
+                ActionID++;
             }
             return 0;
         }
@@ -278,19 +290,20 @@ class BeamSearchWithTree {
         int cnt = 0;
         int leaf_id = 0;
         for (int i = 0; i < tree.size(); ++i) {
-            auto [dir, _, action] = tree[i];
-            if (dir >= 0) {
+            auto [dir_or_leaf_id, action, _] = tree[i];
+            if (dir_or_leaf_id >= 0) {
                 state->apply_op(action);
                 vector<Action> actions = state->get_actions();
-                get<1>(tree[i]) = leaf_id;
+                get<0>(tree[i]) = leaf_id;
                 for (Action &action : actions) {
                     auto [score, hash] = state->try_op(action);
                     if (seen.contains_insert(hash)) continue;
-                    next_beam.emplace_back(leaf_id, score, action);
+                    next_beam.emplace_back(leaf_id, score, action, ActionID);
+                    ActionID++;
                 }
-                leaf_id++;
+                ++leaf_id;
                 state->rollback(action);
-            } else if (dir == -1) {
+            } else if (dir_or_leaf_id == -1) {
                 state->apply_op(action);
             } else {
                 state->rollback(action);
@@ -300,121 +313,144 @@ class BeamSearchWithTree {
     }
 
     //! 不要なNodeを削除し、木を更新する
-    void update_tree(const int turn) {
-        vector<tuple<int, int, Action>> new_tree;
+    int update_tree(State* state, const int turn) {
+        vector<tuple<int, Action, ActionIDType>> new_tree;
         new_tree.reserve(tree.size());
         if (turn == 0) {
-            for (auto [par, _, new_action] : next_beam) {
+            for (auto [par, _, new_action, action_id] : next_beam) {
                 assert(par == -1);
-                new_tree.emplace_back(0, 0, new_action);
+                new_tree.emplace_back(0, new_action, action_id);
             }
             swap(tree, new_tree);
-            return;
+            return 0;
+        }
+
+        int i = 0;
+        int apply_only_turn = 0;
+        while (true) {
+            const auto &[dir_or_leaf_id, action, action_id] = tree[i];
+            // 行きがけかつ帰りがけのaction_idが一致しているなら、一本道なので行くだけ
+            if (dir_or_leaf_id == -1 && action_id == std::get<2>(tree.back())) {
+                ++i;
+                result.emplace_back(action);
+                state->apply_op(action);
+                tree.pop_back();
+                apply_only_turn++;
+            } else {
+                break;
+            }
         }
 
         int beam_idx = 0;
-        for (int i = 0; i < tree.size(); ++i) {
-            auto [dir, leaf_id, action] = tree[i];
-            if (dir >= 0) {
+        for (; i < tree.size(); ++i) {
+            const auto &[dir_or_leaf_id, action, action_id] = tree[i];
+            if (dir_or_leaf_id >= 0) {
                 if (beam_idx >= (int)next_beam.size()) continue;
-                auto [par, _, new_action] = next_beam[beam_idx];
-                if (par == leaf_id) {
-                    new_tree.emplace_back(-1, -1, action);
-                    while (par == leaf_id) {
-                        new_tree.emplace_back(0, leaf_id, new_action);
-                        beam_idx++;
-                        tie(par, _, new_action) = next_beam[beam_idx];
-                    }
-                    new_tree.emplace_back(-2, -1, action);
+                if (next_beam_data[dir_or_leaf_id].empty()) continue;
+                new_tree.emplace_back(-1, action, action_id);
+                for (const int idx : next_beam_data[dir_or_leaf_id]) {
+                    auto &[par, _, new_action, new_action_id] = next_beam[idx];
+                    new_tree.emplace_back(dir_or_leaf_id, new_action, new_action_id);
                 }
-            } else if (dir == -1) {
-                new_tree.emplace_back(-1, -1, action);
+                new_tree.emplace_back(-2, action, action_id);
+                next_beam_data[dir_or_leaf_id].clear();
+            } else if (dir_or_leaf_id == -1) {
+                new_tree.emplace_back(-1, action, action_id);
             } else {
-                int pre_dir = get<0>(new_tree.back());
+                int pre_dir = std::get<0>(new_tree.back());
                 if (pre_dir == -1) {
-                    new_tree.pop_back();
+                    new_tree.pop_back(); // 一つ前が行きがけなら、削除して追加しない
                 } else {
-                    new_tree.emplace_back(-2, -1, action);
+                    new_tree.emplace_back(-2, action, action_id);
                 }
             }
         }
         swap(tree, new_tree);
+        return apply_only_turn;
     }
 
-    vector<Action> get_result() {
+    void get_result() {
         int best_id = -1;
         ScoreType best_score = 0;
-        for (auto [par, score, _] : next_beam) {
+        for (auto [par, score, _, __] : next_beam) {
             if (best_id == -1 || score < best_score) {
                 best_score = score;
                 best_id = par;
             }
         }
         assert(best_id != -1);
-        cerr << "best_id=" << best_id << endl;
-
-        vector<Action> result;
-        for (int i = 0; i < tree.size(); ++i) {
-            auto [dir, laef_idx, action] = tree[i];
-            if (dir >= 0) {
-                if (best_id == laef_idx) {
+        for (const auto &[dir_or_leaf_id, action, _] : tree) {
+            if (dir_or_leaf_id >= 0) {
+                if (best_id == dir_or_leaf_id) {
                     result.emplace_back(action);
-                    return result;
+                    return;
                 }
-            } else if (dir == -1) {
+            } else if (dir_or_leaf_id == -1) {
                 result.emplace_back(action);
             } else {
                 result.pop_back();
             }
         }
+        cerr << "Error: 解が見つかりませんでした" << endl;
         assert(false);
     }
 
   public:
     vector<Action> search(const BeamParam &param, const bool verbose = false) {
+        ActionID = 0;
         State* state = new State;
         state->init();
 
         this->seen = titan23::HashSet(param.BEAM_WIDTH * 4);
 
         int now_turn = 0;
-
         for (int turn = 0; turn < param.MAX_TURN; ++turn) {
-            if (verbose) cerr << "# turn : " << turn+1 << " ";
+            if (verbose) cerr << "Info: # turn : " << turn+1 << endl;
 
             // 次のビーム候補を求める
-            int apply_only_turn = get_next_beam(state, turn-now_turn);
+            get_next_beam(state, turn-now_turn);
 
-            now_turn += apply_only_turn;
-            assert(!next_beam.empty());
+            if (next_beam.empty()) {
+                cerr << "Error: 次の候補が見つかりませんでした" << endl;
+                assert(!next_beam.empty());
+            }
 
             // ビームを絞る // TODO 評価値が一致した場合、親の評価値も参考にするなど
-            // vector<tuple<int, ScoreType, Action>> next_beam; // <par, score, action
             int beam_width = min(param.BEAM_WIDTH, (int)next_beam.size());
-            nth_element(next_beam.begin(), next_beam.begin() + beam_width, next_beam.end(), [&] (const tuple<int, ScoreType, Action> &left, const tuple<int, ScoreType, Action> &right) {
+            assert(beam_width <= param.BEAM_WIDTH);
+            // cerr << "beam_width=" << beam_width << endl;
+            nth_element(next_beam.begin(), next_beam.begin() + beam_width, next_beam.end(), [&] (const tuple<int, ScoreType, Action, ActionIDType> &left, const tuple<int, ScoreType, Action, ActionIDType> &right) {
                 return std::get<1>(left) < std::get<1>(right);
             });
 
-            tuple<int, ScoreType, Action> bests = *min_element(next_beam.begin(), next_beam.begin() + beam_width, [&] (const tuple<int, ScoreType, Action> &left, const tuple<int, ScoreType, Action> &right) {
+            tuple<int, ScoreType, Action, ActionIDType> bests = *min_element(next_beam.begin(), next_beam.begin() + beam_width, [&] (const tuple<int, ScoreType, Action, ActionIDType> &left, const tuple<int, ScoreType, Action, ActionIDType> &right) {
                 return std::get<1>(left) < std::get<1>(right);
             });
-            cerr << "best_score = " << get<1>(bests) << endl;
-            if (get<1>(bests) == 0) {
-                cerr << "find valid solution." << endl;
-                vector<Action> result = get_result();
+            if (verbose) cerr << "Info: best_score = " << get<1>(bests) << endl;
+            if (get<1>(bests) == 0) { // 終了条件
+                cerr << "Info: find valid solution." << endl;
+                get_result();
                 result.emplace_back(get<2>(bests));
                 return result;
             }
 
             // 探索木の更新
-            std::sort(next_beam.begin(), next_beam.begin() + beam_width, [&] (const tuple<int, ScoreType, Action> &left, const tuple<int, ScoreType, Action> &right) {
-                return std::get<0>(left) < std::get<0>(right);
-            });
-            update_tree(turn);
+            if (turn != 0) {
+                if (next_beam_data.size() < next_beam.size()) {
+                    cerr << "resize" << endl;
+                    next_beam_data.resize(next_beam.size());
+                }
+                for (int i = 0; i < beam_width; ++i) {
+                    auto &[par, _, new_action, new_action_id] = next_beam[i];
+                    next_beam_data[par].emplace_back(i);
+                }
+            }
+            int apply_only_turn = update_tree(state, turn);
+            now_turn += apply_only_turn;
         }
 
         // 答えを復元する
-        vector<Action> result = get_result();
+        get_result();
         return result;
     }
 };
@@ -423,8 +459,8 @@ class BeamSearchWithTree {
 
 void solve() {
     beam_search_with_tree::BeamParam param;
-    param.MAX_TURN = 60;
-    param.BEAM_WIDTH = 100000;
+    param.MAX_TURN = 1000;
+    param.BEAM_WIDTH = 20000;
     beam_search_with_tree::init_zhs();
     beam_search_with_tree::BeamSearchWithTree bs;
     vector<beam_search_with_tree::Action> ans = bs.search(param, true);
