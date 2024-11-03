@@ -4,7 +4,8 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "C:/Users/titan/source/Library_cpp/*"
+                // "C:/Users/titan/source/Library_cpp/*"
+                "/home/titan/source/Library_cpp/*"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

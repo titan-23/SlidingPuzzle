@@ -277,7 +277,7 @@ class BeamSearchWithTree {
             if (dir_or_leaf_id >= 0) {
                 state->apply_op(action);
                 vector<Action> actions = state->get_actions();
-                get<0>(tree[i]) = leaf_id;
+                std::get<0>(tree[i]) = leaf_id;
                 for (Action &action : actions) {
                     auto [score, hash] = state->try_op(action);
                     if (seen.contains_insert(hash)) continue;
@@ -400,7 +400,6 @@ class BeamSearchWithTree {
             int beam_width = min(param.BEAM_WIDTH, (int)next_beam.size());
             assert(beam_width <= param.BEAM_WIDTH);
 
-            // TODO 評価値が一致した場合、親の評価値も参考にするなど
             nth_element(next_beam.begin(), next_beam.begin() + beam_width, next_beam.end(), [&] (const tuple<int, ScoreType, Action, ActionIDType> &left, const tuple<int, ScoreType, Action, ActionIDType> &right) {
                 return std::get<1>(left) < std::get<1>(right);
             });
@@ -408,11 +407,11 @@ class BeamSearchWithTree {
             tuple<int, ScoreType, Action, ActionIDType> bests = *min_element(next_beam.begin(), next_beam.begin() + beam_width, [&] (const tuple<int, ScoreType, Action, ActionIDType> &left, const tuple<int, ScoreType, Action, ActionIDType> &right) {
                 return std::get<1>(left) < std::get<1>(right);
             });
-            if (verbose) cerr << "Info: best_score = " << get<1>(bests) << endl;
-            if (get<1>(bests) == 0) { // 終了条件
+            if (verbose) cerr << "Info: best_score = " << std::get<1>(bests) << endl;
+            if (std::get<1>(bests) == 0) { // 終了条件
                 cerr << "Info: find valid solution." << endl;
                 get_result();
-                result.emplace_back(get<2>(bests));
+                result.emplace_back(std::get<2>(bests));
                 return result;
             }
 
